@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         YouTube Channel Tab Video Filter
+// @name         YouTube Channel Tab Video Filter (Next to Last Tab) - Auto Reset
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  Add a filter box after the last channel tab to hide/show videos by title text on YouTube channel pages.
+// @version      1.4
+// @description  Add a filter box after the last channel tab to hide/show videos by title text on YouTube channel pages. Auto-clears when switching tabs or URL changes.
 // @author       haroro107
 // @match        https://www.youtube.com/*
 // @grant        none
@@ -13,8 +13,26 @@
 
   const UI_ID = 'yt-channel-filter-ui-v2';
   let currentQuery = '';
+  let lastPath = location.pathname + location.search + location.hash;
 
+  // --- Utility: dispatch locationchange when SPA navigation happens ---
+  (function patchHistoryEvents() {
+    const _wr = (type) => {
+      const orig = history[type];
+      return function () {
+        const rv = orig.apply(this, arguments);
+        window.dispatchEvent(new Event('locationchange'));
+        return rv;
+      };
+    };
+    history.pushState = _wr('pushState');
+    history.replaceState = _wr('replaceState');
+    window.addEventListener('popstate', () => window.dispatchEvent(new Event('locationchange')));
+  })();
+
+  // --- attach UI ---
   function attachUI() {
+    // Avoid re-creating if exists
     if (document.getElementById(UI_ID)) return;
 
     // Find the last tab (with search form inside)
@@ -60,9 +78,7 @@
     });
 
     clr.addEventListener('click', () => {
-      input.value = '';
-      currentQuery = '';
-      applyFilter('');
+      resetFilterUI();
     });
 
     input.addEventListener('keydown', (e) => {
@@ -71,6 +87,9 @@
         applyFilter(currentQuery);
       }
     });
+
+    // If we have an active filter (rare), reapply it
+    if (currentQuery) input.value = currentQuery;
   }
 
   function styleBtn(b) {
@@ -84,7 +103,7 @@
 
   function getTitleText(item) {
     const el = item.querySelector('#video-title, a#video-title-link, a#video-title');
-    if (el) return el.textContent.trim() || el.title || '';
+    if (el) return (el.textContent || el.title || '').trim();
     return '';
   }
 
@@ -106,17 +125,48 @@
     });
   }
 
-  // MutationObserver to re-attach UI on navigation/infinite scroll
+  function resetFilterUI() {
+    const container = document.getElementById(UI_ID);
+    if (container) {
+      const input = container.querySelector('input[type="text"]');
+      if (input) input.value = '';
+    }
+    currentQuery = '';
+    applyFilter('');
+  }
+
+  // --- Observe DOM changes to attach UI and reapply filter as needed ---
   const observer = new MutationObserver(() => {
     attachUI();
     if (currentQuery) applyFilter(currentQuery);
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  document.addEventListener('yt-navigate-finish', () => {
-    setTimeout(() => {
+  // --- On SPA navigation or YouTube specific navigation finish, reset if path changed ---
+  function handleMaybeReset() {
+    const nowPath = location.pathname + location.search + location.hash;
+    if (nowPath !== lastPath) {
+      lastPath = nowPath;
+      // Clear the UI and filter when path changes (user moved between /videos, /streams, /posts, etc.)
+      resetFilterUI();
+      // Re-attach UI after navigation (some elements may not be present instantly)
+      setTimeout(() => attachUI(), 400);
+    } else {
+      // same path — do not reset (prevents clearing on infinite scroll)
+      // but still reattach if missing
       attachUI();
       if (currentQuery) applyFilter(currentQuery);
-    }, 600);
-  });
+    }
+  }
+
+  window.addEventListener('locationchange', handleMaybeReset);
+  window.addEventListener('yt-navigate-finish', handleMaybeReset);
+
+  // Also handle initial load (in case the script runs after navigation)
+  setTimeout(() => {
+    attachUI();
+    // No reset on first load, but store path
+    lastPath = location.pathname + location.search + location.hash;
+  }, 600);
+
 })();
